@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-import simpy
 from simpy_ds_extensions import Adversary
 from simpy_ds import Process, Network
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -8,29 +7,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 from cryptography.exceptions import InvalidSignature
 from collections import defaultdict  # 初始化后，不存在的key会自动创建一个默认值
-
-
-n = 10  # number of nodes
-t = 0  # number of byzantine nodes
-d = 2  # power of message adversary
-
-
-nodes = [f"p{i}" for i in range(n)]
-
-private_keys = {}
-public_keys = {}
-for i, pi in enumerate(nodes):
-    sk = Ed25519PrivateKey.generate()
-    pk = sk.public_key()
-    private_keys[pi] = sk
-    public_keys[pi] = pk
-
-# print(private_keys)
-# print(public_keys)
-
-k = 5
-app_messages = [f"m{i}" for i in range(k)]
-print(app_messages)
 
 
 pidT = str
@@ -71,9 +47,19 @@ class MBRBProcess(Process):
         self.pks = public_keys
         self.n = len(public_keys)
         self.t = t
+        self.deliver_events = []  # 用于Oracle检查
+
+    def run(self):
+        # process的主体函数，每次yield一个recv_tag，然后调用on_recv
+        while True:
+            message = yield self.recv_tag("BUNDLE")
+            if isinstance(message.payload, Bundle):
+                self.on_recv_bundle(message.payload)
 
     def mbrb_deliver(self, m: msgT, sn: seqT, j: pidT):
         self.delivered[(j, sn)] = m
+        self.deliver_events.append((self.env.now, j, sn, m))
+        # print(f"time={self.env.now:.2f}: {self.pid} delivered ({j}, {sn}, {m!r})")
 
     def serialize_msg(self, m: msgT, sn: seqT, pid: pidT):
 
@@ -122,7 +108,7 @@ class MBRBProcess(Process):
             emitter=self.pid,
             signatures=frozenset(self.valid_signatures[key]),
         )
-        self.broadcast(payload=bundle)
+        self.broadcast(payload=bundle, tag="BUNDLE")
 
     def on_recv_bundle(self, bundle: Bundle):
         sn, j, m = bundle.sequence_number, bundle.emitter, bundle.content
@@ -140,7 +126,7 @@ class MBRBProcess(Process):
                     emitter=j,
                     signatures=frozenset(all_sigs),
                 )
-                self.broadcast(nb)
+                self.broadcast(nb, tag="BUNDLE")
 
             # quorum 检查
             all_sigs = self.valid_signatures[(m, sn, j)]
@@ -151,5 +137,5 @@ class MBRBProcess(Process):
                     emitter=j,
                     signatures=frozenset(all_sigs),
                 )
-                self.broadcast(nb)
+                self.broadcast(nb, tag="BUNDLE")
                 self.mbrb_deliver(m, sn, j)
